@@ -105,6 +105,9 @@ jobs:
             -Dgallium-d3d10umd=true `
             -Dgallium-wgl-dll-name=viogpu_wgl `
             -Dgallium-d3d10-dll-name=viogpu_d3d10 `
+            -Dvulkan-drivers=virtio `
+            -Dzlib=disabled `
+            -Dc_std=c11 `
             -Db_vscrt=mt
 
       - name: Build and install Mesa
