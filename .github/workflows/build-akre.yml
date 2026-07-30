@@ -1,0 +1,185 @@
+name: Build viogpu3d Driver (akre)
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      mesa_branch:
+        description: 'Mesa branch to build'
+        required: false
+        default: 'akre-mesa-26.1.0'
+      driver_branch:
+        description: 'KVM guest drivers branch'
+        required: false
+        default: 'akre-4k-fix'
+
+env:
+  MESA_REPO: https://github.com/arehnman/virtio-win-mesa
+  MESA_BRANCH: ${{ github.event.inputs.mesa_branch || 'akre-mesa-26.1.0' }}
+  DRIVER_REPO: https://github.com/alpytron/kvm-guest-drivers-windows-neptune
+  DRIVER_BRANCH: ${{ github.event.inputs.driver_branch || 'akre-4k-fix' }}
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Meson and Ninja
+        run: |
+          pip install meson ninja mako pyyaml
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install winflexbison
+        run: |
+          choco install winflexbison3 -y
+          # Add to PATH - winflexbison installs to chocolatey bin
+          echo "C:\ProgramData\chocolatey\bin" >> $env:GITHUB_PATH
+
+      - name: Install Windows Driver Kit (WDK)
+        run: |
+          choco install windowsdriverkit10 -y
+
+      - name: Find Windows SDK headers
+        run: |
+          # d3d10umddi.h is in "um", it includes d3dkmddi.h which is in "shared"
+          $sdkInclude = "C:\Program Files (x86)\Windows Kits\10\Include"
+          $sdkVersions = Get-ChildItem $sdkInclude -Directory | Sort-Object Name -Descending
+
+          foreach ($ver in $sdkVersions) {
+            $umPath = Join-Path $ver.FullName "um"
+            $sharedPath = Join-Path $ver.FullName "shared"
+            $d3d10Header = Join-Path $umPath "d3d10umddi.h"
+            $d3dkmHeader = Join-Path $sharedPath "d3dkmddi.h"
+
+            if ((Test-Path $d3d10Header) -and (Test-Path $d3dkmHeader)) {
+              echo "Found d3d10umddi.h in: $umPath"
+              echo "Found d3dkmddi.h in: $sharedPath"
+              echo "WDK_INCLUDE=$umPath;$sharedPath" >> $env:GITHUB_ENV
+              exit 0
+            }
+          }
+
+          echo "ERROR: Could not find required headers"
+          exit 1
+
+      - name: Create working directories
+        run: |
+          mkdir mesa_prefix
+          mkdir build_output
+          echo "MESA_PREFIX=${{ github.workspace }}\mesa_prefix" >> $env:GITHUB_ENV
+          echo "MESA_PREFIX_x64=${{ github.workspace }}\mesa_prefix" >> $env:GITHUB_ENV
+
+      # Part 2: Build Mesa
+      - name: Clone Mesa source
+        run: |
+          git clone --depth 10 --branch ${{ env.MESA_BRANCH }} ${{ env.MESA_REPO }} mesa
+
+      - name: Configure Mesa build
+        working-directory: mesa
+        env:
+          # Add WDK include path to INCLUDE for MSVC to find d3d10umddi.h
+          INCLUDE: ${{ env.WDK_INCLUDE }};${{ env.INCLUDE }}
+        run: |
+          mkdir build
+          cd build
+
+          echo "INCLUDE paths: $env:INCLUDE"
+
+          meson setup .. --prefix=$env:MESA_PREFIX `
+            -Dgallium-drivers=virgl `
+            -Dgallium-d3d10umd=true `
+            -Dgallium-wgl-dll-name=viogpu_wgl `
+            -Dgallium-d3d10-dll-name=viogpu_d3d10 `
+            -Db_vscrt=mt
+
+      - name: Build and install Mesa
+        working-directory: mesa/build
+        env:
+          INCLUDE: ${{ env.WDK_INCLUDE }};${{ env.INCLUDE }}
+        run: |
+          ninja install
+
+      - name: Fix Mesa DLL names
+        run: |
+          # Sometimes zlib is built as z-1.dll instead of z.dll
+          $binPath = "$env:MESA_PREFIX\bin"
+          if (-not (Test-Path "$binPath\z.dll")) {
+            $zDll = Get-ChildItem "$binPath\z-*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($zDll) {
+              Copy-Item $zDll.FullName "$binPath\z.dll"
+              Write-Host "Copied $($zDll.Name) to z.dll"
+            }
+          }
+
+      # Part 3: Build Driver
+      - name: Clone KVM guest drivers
+        run: |
+          git clone --branch ${{ env.DRIVER_BRANCH }} ${{ env.DRIVER_REPO }} kvm-guest-drivers-windows
+
+      - name: Build viogpu driver
+        working-directory: kvm-guest-drivers-windows/viogpu
+        run: |
+          .\build_AllNoSdv.bat
+
+      - name: Collect build artifacts
+        run: |
+          # Copy Mesa DLLs
+          Copy-Item -Path "$env:MESA_PREFIX\bin\*.dll" -Destination "build_output\" -Force -ErrorAction SilentlyContinue
+          Copy-Item -Path "$env:MESA_PREFIX\lib\*.dll" -Destination "build_output\" -Force -ErrorAction SilentlyContinue
+
+          # Copy driver files - search for built driver artifacts
+          $driverPaths = @(
+            "kvm-guest-drivers-windows\viogpu\viogpu3d\x64",
+            "kvm-guest-drivers-windows\viogpu\viogpu3d\Win10Release",
+            "kvm-guest-drivers-windows\viogpu\viogpu3d\Win11Release",
+            "kvm-guest-drivers-windows\Build"
+          )
+
+          foreach ($path in $driverPaths) {
+            if (Test-Path $path) {
+              Copy-Item -Path "$path\*" -Destination "build_output\" -Recurse -Force -ErrorAction SilentlyContinue
+            }
+          }
+
+          # List collected artifacts
+          Write-Host "=== Collected build artifacts ==="
+          Get-ChildItem -Path "build_output" -Recurse | Format-Table Name, Length, Directory
+
+      - name: Upload Mesa artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mesa-dlls
+          path: |
+            ${{ env.MESA_PREFIX }}/bin/*.dll
+            ${{ env.MESA_PREFIX }}/lib/*.dll
+          if-no-files-found: warn
+
+      - name: Upload driver artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: viogpu3d-driver
+          path: build_output/
+          if-no-files-found: warn
+
+      - name: Upload full build output
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-build
+          path: |
+            kvm-guest-drivers-windows/viogpu/
+          if-no-files-found: warn
