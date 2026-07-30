@@ -133,6 +133,8 @@ jobs:
 
       - name: Build viogpu driver
         working-directory: kvm-guest-drivers-windows/viogpu
+        env:
+          VIRTIO_WIN_NO_ARM: '1'
         run: |
           .\build_AllNoSdv.bat
 
