@@ -1,0 +1,56 @@
+name: Build viogpu3d KMD only (akre)
+
+on:
+  workflow_dispatch:
+    inputs:
+      driver_branch:
+        description: 'driver branch'
+        required: false
+        default: 'akre-4k-fix'
+
+env:
+  DRIVER_REPO: https://github.com/alpytron/kvm-guest-drivers-windows-neptune
+  DRIVER_BRANCH: ${{ github.event.inputs.driver_branch || 'akre-4k-fix' }}
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Windows Driver Kit (WDK)
+        run: choco install windowsdriverkit10 -y
+
+      - name: Create empty Mesa prefix (KMD-only; packaging steps self-skip)
+        run: |
+          mkdir mesa_prefix
+          echo "MESA_PREFIX_x64=${{ github.workspace }}\mesa_prefix" >> $env:GITHUB_ENV
+
+      - name: Clone driver
+        run: git clone --branch ${{ env.DRIVER_BRANCH }} ${{ env.DRIVER_REPO }} kvm-guest-drivers-windows
+
+      - name: Build KMD (x64 only, no ARM64, no packaging)
+        working-directory: kvm-guest-drivers-windows/viogpu
+        env:
+          VIRTIO_WIN_NO_ARM: '1'
+        run: .\build_AllNoSdv.bat
+
+      - name: Collect viogpu3d.sys (Win10 x64)
+        run: |
+          mkdir out
+          $sys = Get-ChildItem -Path kvm-guest-drivers-windows -Recurse -Filter viogpu3d.sys |
+                 Where-Object { $_.FullName -match 'win10_amd64' } | Select-Object -First 1
+          if (-not $sys) {
+            $sys = Get-ChildItem -Path kvm-guest-drivers-windows -Recurse -Filter viogpu3d.sys | Select-Object -First 1
+          }
+          Write-Host "Found: $($sys.FullName)  size=$($sys.Length)"
+          Copy-Item $sys.FullName "out\viogpu3d.sys" -Force
+          Get-ChildItem out | Format-Table Name,Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: viogpu3d-kmd
+          path: out/
