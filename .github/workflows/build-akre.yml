@@ -106,7 +106,7 @@ jobs:
             -Dgallium-wgl-dll-name=viogpu_wgl `
             -Dgallium-d3d10-dll-name=viogpu_d3d10 `
             -Dvulkan-drivers=virtio `
-            -Dc_args="/experimental:c11atomics" `
+            -Dc_args="/experimental:c11atomics /Dpid_t=DWORD" `
             -Dzlib=disabled `
             -Dc_std=c11 `
             -Db_vscrt=mt
