@@ -92,21 +92,26 @@ jobs:
       - name: Configure Mesa build
         working-directory: mesa
         env:
-          # Add WDK include path to INCLUDE for MSVC to find d3d10umddi.h
+          # Add WDK include path so the compiler finds d3d10umddi.h
           INCLUDE: ${{ env.WDK_INCLUDE }};${{ env.INCLUDE }}
         run: |
           mkdir build
           cd build
 
+          # Mesa on Windows builds with clang-cl (MSVC rejects GNU extensions
+          # like void* arithmetic used by the venus/virtio vulkan driver).
+          $env:PATH = "C:\Program Files\LLVM\bin;$env:PATH"
+          clang-cl --version
+          "[binaries]`nc = 'clang-cl'`ncpp = 'clang-cl'`nc_ld = 'lld-link'`ncpp_ld = 'lld-link'" | Set-Content native.ini
           echo "INCLUDE paths: $env:INCLUDE"
 
-          meson setup .. --prefix=$env:MESA_PREFIX `
+          meson setup .. --prefix=$env:MESA_PREFIX --native-file native.ini `
             -Dgallium-drivers=virgl `
             -Dgallium-d3d10umd=true `
             -Dgallium-wgl-dll-name=viogpu_wgl `
             -Dgallium-d3d10-dll-name=viogpu_d3d10 `
             -Dvulkan-drivers=virtio `
-            -Dc_args="/experimental:c11atomics /Dpid_t=DWORD" `
+            -Dc_args="/Dpid_t=DWORD" `
             -Dzlib=disabled `
             -Dc_std=c11 `
             -Db_vscrt=mt
@@ -116,6 +121,7 @@ jobs:
         env:
           INCLUDE: ${{ env.WDK_INCLUDE }};${{ env.INCLUDE }}
         run: |
+          $env:PATH = "C:\Program Files\LLVM\bin;$env:PATH"
           ninja install
 
       - name: Fix Mesa DLL names
