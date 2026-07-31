@@ -32,8 +32,12 @@ jobs:
       - name: Clone driver
         run: git clone --branch ${{ env.DRIVER_BRANCH }} ${{ env.DRIVER_REPO }} kvm-guest-drivers-windows
 
+      # x86 kernel config fails on newer CI toolsets ("'Win32' is not a valid
+      # architecture for Kernel mode drivers"); we only need Win10 x64, so don't
+      # let that stray failure abort the job before the amd64 .sys is collected.
       - name: Build KMD (x64 only, no ARM64, no packaging)
         working-directory: kvm-guest-drivers-windows/viogpu
+        continue-on-error: true
         env:
           VIRTIO_WIN_NO_ARM: '1'
         run: .\build_AllNoSdv.bat
@@ -44,7 +48,7 @@ jobs:
           $sys = Get-ChildItem -Path kvm-guest-drivers-windows -Recurse -Filter viogpu3d.sys |
                  Where-Object { $_.FullName -match 'win10_amd64' } | Select-Object -First 1
           if (-not $sys) {
-            $sys = Get-ChildItem -Path kvm-guest-drivers-windows -Recurse -Filter viogpu3d.sys | Select-Object -First 1
+            throw "Win10 x64 viogpu3d.sys was not produced by the build"
           }
           Write-Host "Found: $($sys.FullName)  size=$($sys.Length)"
           Copy-Item $sys.FullName "out\viogpu3d.sys" -Force
